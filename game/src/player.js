@@ -45,10 +45,10 @@ export function createPlayer(colliders) {
   }
 
   // Recoil kicks the view up and sideways; the next bullet inherits it.
-  function recoil(pitchKick, yawKick) {
+  function recoil(pitchKick, yawKick, heat = 0.22) {
     player.pitch = Math.min(1.45, player.pitch + pitchKick);
     player.yaw += yawKick;
-    player.heat = Math.min(1, player.heat + 0.22);
+    player.heat = Math.min(1, player.heat + heat);
   }
 
   function groundSpeed() {
@@ -56,9 +56,12 @@ export function createPlayer(colliders) {
   }
 
   // Cone half-angle in degrees for a bullet leaving the muzzle right now.
-  function spreadDegrees() {
-    const base = player.crouching ? 0.35 : 0.85;
-    return base + groundSpeed() * 0.22 + player.heat * 1.7;
+  // Stopping and crouching tighten the cone hard; airborne widens it more than sprinting.
+  function spreadDegrees(weapon) {
+    const base = player.crouching ? weapon.spreadCrouch : weapon.spreadStand;
+    const move = groundSpeed() * weapon.spreadMove;
+    const air = player.onGround ? 0 : 1.9;
+    return base + move + air + player.heat * (weapon.heatSpread || 1.4);
   }
 
   function step(dt, keys) {

@@ -1,9 +1,11 @@
 // HUD drawn from the game state each frame. DOM overlay only, no canvas text, and no
 // layout built in the frame loop: structure is read once here, text updates are cached.
 import { CONSTANTS, GOODS } from './state.js';
+import { WEAPONS } from './weapons.js';
 
 export function createHud() {
   const el = {
+    weaponName: document.getElementById('weapon-name'),
     health: document.getElementById('hud-health'),
     healthBar: document.getElementById('hud-health-bar'),
     armour: document.getElementById('hud-armour'),
@@ -21,6 +23,7 @@ export function createHud() {
     scoreCinder: document.getElementById('score-cinder'),
     vignette: document.getElementById('vignette'),
     hitmarker: document.getElementById('hitmarker'),
+    crosshair: document.getElementById('crosshair'),
     killfeed: document.getElementById('killfeed'),
     center: document.getElementById('center-msg'),
     centerTitle: document.getElementById('center-title'),
@@ -30,16 +33,40 @@ export function createHud() {
     buyMoney: document.getElementById('buy-money'),
     buyNote: document.getElementById('buy-note'),
     scoreboard: document.getElementById('scoreboard'),
+    sbRound: document.getElementById('sb-round'),
+    sbKestrelRows: document.getElementById('sb-kestrel-rows'),
+    sbCinderRows: document.getElementById('sb-cinder-rows'),
+    sbKestrelScore: document.getElementById('sb-kestrel-score'),
+    sbCinderScore: document.getElementById('sb-cinder-score'),
+    bombStatus: document.getElementById('bomb-status'),
+    bombText: document.getElementById('bomb-text'),
+    holdWrap: document.getElementById('hold-wrap'),
+    holdLabel: document.getElementById('hold-label'),
+    holdFill: document.getElementById('hold-fill'),
     resume: document.getElementById('resume'),
   };
 
-  const cache = { time: '', phase: '', kScore: -1, cScore: -1, round: -1, money: -1, mag: -1, reserve: -1, health: -1, armour: -1, reload: false };
+  const cache = {
+    time: '', phase: '', kScore: -1, cScore: -1, round: -1, money: -1,
+    mag: -1, reserve: -1, health: -1, armour: -1, reload: false,
+    weapon: '', bomb: '', hold: -1, spread: -1,
+  };
   let hitmarkerTimer = 0;
 
-  function draw(game, dt) {
+  function isGun(id) {
+    return id === 'vk7' || id === 'k9' || id === 'p9';
+  }
+
+  function draw(game, dt, spreadPx) {
     // Vignette fades in real time; damageFlash lives in the game state.
     game.damageFlash = Math.max(0, game.damageFlash - dt * 1.15);
     el.vignette.style.opacity = game.damageFlash.toFixed(3);
+
+    // Dynamic crosshair: the gap follows the live spread in pixels.
+    if (spreadPx !== undefined && Math.abs(spreadPx - cache.spread) > 0.4) {
+      cache.spread = spreadPx;
+      el.crosshair.style.setProperty('--gap', spreadPx.toFixed(1) + 'px');
+    }
 
     if (cache.health !== (game.player.health | 0)) {
       cache.health = game.player.health | 0;
@@ -56,17 +83,28 @@ export function createHud() {
       cache.money = game.money;
       el.money.textContent = '$' + game.money.toLocaleString('en-US');
     }
-    if (cache.mag !== game.ammo.mag) {
-      cache.mag = game.ammo.mag;
-      el.ammoMag.textContent = String(cache.mag);
-      el.ammoBlock.classList.toggle('empty', cache.mag === 0);
-      el.ammoBlock.classList.toggle('low', cache.mag > 0 && cache.mag <= 6);
+
+    // Weapon name + ammo readout.
+    const gun = isGun(game.curWeapon);
+    const mag = gun ? game.guns[game.curWeapon].mag : -1;
+    const reserve = gun ? game.guns[game.curWeapon].reserve : -1;
+    if (cache.weapon !== game.curWeapon + ':' + game.grenades) {
+      cache.weapon = game.curWeapon + ':' + game.grenades;
+      if (gun) el.weaponName.textContent = WEAPONS[game.curWeapon].name;
+      else if (game.curWeapon === 'knife') el.weaponName.textContent = 'KNIFE';
+      else el.weaponName.textContent = 'HE GRENADE ×' + game.grenades;
     }
-    if (cache.reserve !== game.ammo.reserve) {
-      cache.reserve = game.ammo.reserve;
-      el.ammoReserve.textContent = '/ ' + cache.reserve;
+    if (cache.mag !== mag) {
+      cache.mag = mag;
+      el.ammoMag.textContent = mag >= 0 ? String(mag) : '—';
+      el.ammoBlock.classList.toggle('empty', mag === 0);
+      el.ammoBlock.classList.toggle('low', mag > 0 && mag <= 6);
     }
-    const reloading = game.reloadT > 0;
+    if (cache.reserve !== reserve) {
+      cache.reserve = reserve;
+      el.ammoReserve.textContent = reserve >= 0 ? '/ ' + reserve : '';
+    }
+    const reloading = gun && game.reloadT > 0;
     if (cache.reload !== reloading) {
       cache.reload = reloading;
       el.reloadLabel.hidden = !reloading;
@@ -110,12 +148,50 @@ export function createHud() {
       cache.cScore = game.teams.cinder.score;
       el.scoreCinder.textContent = String(cache.cScore);
     }
+
+    // Bomb chip under the timer.
+    const bomb = game.bombState;
+    if (bomb && bomb.planted) {
+      const bs = Math.ceil(bomb.timer);
+      const label = 'BOMB · SITE ' + bomb.site + ' · 0:' + String(Math.max(0, bs)).padStart(2, '0');
+      if (cache.bomb !== label) {
+        cache.bomb = label;
+        el.bombText.textContent = label;
+        el.bombStatus.hidden = false;
+        el.bombStatus.classList.toggle('critical', bs <= 10);
+      }
+    } else if (cache.bomb !== '') {
+      cache.bomb = '';
+      el.bombStatus.hidden = true;
+    }
+
+    // Hold-to-plant / defuse progress bar.
+    const holding = bomb && bomb.holding;
+    const progress = bomb ? Math.max(bomb.plantProgress, bomb.defuseProgress) : 0;
+    if (holding) {
+      const pct = Math.round(progress * 200); // half-percent resolution
+      if (cache.hold !== pct || el.holdLabel.textContent !== bomb.holdLabel) {
+        cache.hold = pct;
+        el.holdWrap.hidden = false;
+        el.holdLabel.textContent = bomb.holdLabel;
+        el.holdFill.style.transform = `scaleX(${progress})`;
+      }
+    } else if (cache.hold !== -1) {
+      cache.hold = -1;
+      el.holdWrap.hidden = true;
+    }
   }
 
   function markHit() {
     el.hitmarker.classList.add('on');
     window.clearTimeout(hitmarkerTimer);
     hitmarkerTimer = window.setTimeout(() => el.hitmarker.classList.remove('on'), 120);
+  }
+
+  function markKill() {
+    el.hitmarker.classList.add('kill');
+    window.clearTimeout(hitmarkerTimer);
+    hitmarkerTimer = window.setTimeout(() => el.hitmarker.classList.remove('kill', 'on'), 200);
   }
 
   function pushKillFeed(html) {
@@ -133,8 +209,30 @@ export function createHud() {
     el.center.hidden = !title;
   }
 
-  function setScoreboard(open) {
+  function setScoreboard(open, game) {
     el.scoreboard.hidden = !open;
+    if (open && game) refreshScoreboard(game);
+  }
+
+  // Rebuild the two team tables from G.stats. Called on open and after every kill.
+  function refreshScoreboard(game) {
+    el.sbRound.textContent = 'HALDEN YARD · FIRST TO ' + CONSTANTS.WIN_TARGET;
+    el.sbKestrelScore.textContent = String(game.teams.kestrel.score);
+    el.sbCinderScore.textContent = String(game.teams.cinder.score);
+    el.sbKestrelRows.innerHTML = buildRows(game, 'kestrel');
+    el.sbCinderRows.innerHTML = buildRows(game, 'cinder');
+  }
+
+  function buildRows(game, team) {
+    let html = '';
+    for (const id of Object.keys(game.stats)) {
+      const row = game.stats[id];
+      if (row.team !== team) continue;
+      const you = row.id === 'player';
+      html += `<tr><td class="${you ? 'sb-you' : ''}">${row.name}</td>` +
+        `<td>${row.kills}</td><td>${row.deaths}</td><td>${row.assists}</td></tr>`;
+    }
+    return html;
   }
 
   function setBuyMenu(open, game) {
@@ -167,9 +265,11 @@ export function createHud() {
   return {
     draw,
     markHit,
+    markKill,
     pushKillFeed,
     setCenter,
     setScoreboard,
+    refreshScoreboard,
     setBuyMenu,
     renderBuy,
     buyNote,
@@ -184,11 +284,9 @@ export function createHud() {
 }
 
 function isOwned(game, item) {
+  if (item.id === 'vk7' || item.id === 'k9' || item.id === 'p9') return !!game.owned[item.id];
+  if (item.id === 'he') return game.grenades >= 2;
   if (item.id === 'vest') return game.player.armour >= 100;
-  if (item.id === 'helmet') return game.loadout.helmet;
-  if (item.id === 'ammo') return game.ammo.reserve >= 300;
-  if (item.id === 'sidearm' || item.id === 'hornet9' || item.id === 'breach12' || item.id === 'longstride') {
-    return game.loadout.primary === item.name;
-  }
+  if (item.id === 'helmet') return game.helmet;
   return false;
 }
