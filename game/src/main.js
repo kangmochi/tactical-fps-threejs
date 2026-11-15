@@ -128,6 +128,7 @@ const playerTarget = {
   counted: false,
   lastDamagedBy: null,
   get height() { return player.state.height; },
+  get crouching() { return player.state.crouching; },
   get velocityX() { return player.state.velocity.x; },
   get velocityZ() { return player.state.velocity.z; },
   get alive() { return G.player.health > 0; },
@@ -144,6 +145,8 @@ const botsCtl = createBots(scene, world, arsenal, {
   },
 });
 const targets = [playerTarget, ...botsCtl.bots];
+// The shooter's own body must never be a hitscan target (the camera sits inside it).
+const shootTargets = targets.filter((t) => t !== playerTarget);
 
 // Combat damage funnel: remembers the attacker for credit and assists.
 function damageTarget(t, dmg, part, attacker) {
@@ -298,7 +301,7 @@ function fireOnce() {
   if (id === 'knife') {
     fireState.cooldown = WEAPONS.knife.interval;
     audio.slash();
-    const fx = -Math.sin(player.yaw), fz = -Math.cos(player.yaw);
+    const fx = -Math.sin(player.state.yaw), fz = -Math.cos(player.state.yaw);
     let best = null;
     let bestD = WEAPONS.knife.range;
     for (const t of targets) {
@@ -323,9 +326,9 @@ function fireOnce() {
     if (G.grenades <= 0) { audio.dry(); fireState.cooldown = 0.3; return; }
     fireState.cooldown = 0.7;
     G.grenades -= 1;
-    const pitch = player.pitch;
+    const pitch = player.state.pitch;
     const cosP = Math.cos(pitch);
-    tmpDir.set(-Math.sin(player.yaw) * cosP, Math.sin(pitch) + 0.18, -Math.cos(player.yaw) * cosP).normalize();
+    tmpDir.set(-Math.sin(player.state.yaw) * cosP, Math.sin(pitch) + 0.18, -Math.cos(player.state.yaw) * cosP).normalize();
     const from = camera.position;
     arsenal.throwGrenade(from.x + tmpDir.x * 0.5, from.y - 0.1, from.z + tmpDir.z * 0.5,
       tmpDir.x * 15, tmpDir.y * 15 + 2.5, tmpDir.z * 15, playerTarget);
@@ -348,19 +351,18 @@ function fireOnce() {
   const spread = THREE.MathUtils.degToRad(player.spreadDegrees(w));
   const angle = Math.random() * Math.PI * 2;
   const radius = Math.sqrt(Math.random()) * spread;
-  const yaw = player.yaw + Math.cos(angle) * radius;
-  const pitch = player.pitch + Math.sin(angle) * radius;
+  const yaw = player.state.yaw + Math.cos(angle) * radius;
+  const pitch = player.state.pitch + Math.sin(angle) * radius;
   const cosPitch = Math.cos(pitch);
   tmpDir.set(-Math.sin(yaw) * cosPitch, Math.sin(pitch), -Math.cos(yaw) * cosPitch);
-
   const from = camera.position;
-  const hit = arsenal.hitscan(from.x, from.y, from.z, tmpDir.x, tmpDir.y, tmpDir.z, 150, targets);
+  const hit = arsenal.hitscan(from.x, from.y, from.z, tmpDir.x, tmpDir.y, tmpDir.z, 150, shootTargets);
 
   // Muzzle tracer from lower-right of the view, like a gun held on screen.
   tmpMuzzle.set(
-    from.x + Math.cos(player.yaw) * 0.22 - Math.sin(player.yaw) * 0.35,
+    from.x + Math.cos(player.state.yaw) * 0.22 - Math.sin(player.state.yaw) * 0.35,
     from.y - 0.18,
-    from.z - Math.sin(player.yaw) * 0.22 - Math.cos(player.yaw) * 0.35,
+    from.z - Math.sin(player.state.yaw) * 0.22 - Math.cos(player.state.yaw) * 0.35,
   );
   const endDist = hit.dist >= 0 ? hit.dist : 150;
   arsenal.spawnTracer(

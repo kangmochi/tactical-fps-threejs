@@ -1,8 +1,10 @@
 // Opponents that move, see, hear and shoot. Bots walk a waypoint graph built from the
 // yard's lanes and sites, keep a 100-degree view cone with line-of-sight rays, hear
 // gunshots and grenades, stop to aim, fire in bursts, shy away when hurt and reload
-// when empty. Fair by design: a 0.42 s reaction and first shot that lands about half
-// the time at duel range. Reused by the headless demo mode to drive the player.
+// when empty. Fair by design: 0.35-0.55 s reaction (longer when the target re-appears
+// from behind cover), an opening burst that usually misses a fresh sighting, and aim
+// that tightens only while the bot holds still on target. The headless demo mode
+// reuses this to drive the player.
 import * as THREE from 'three';
 import { WEAPONS, rangeFalloff } from './weapons.js';
 
@@ -105,7 +107,20 @@ const CONE_COS = Math.cos((100 / 2) * Math.PI / 180);
 const TURN_RATE = 3.1;
 const MOVE_SPEED = 3.35;
 const RETREAT_SPEED = 4.15;
-const REACT_TIME = 0.42;
+// Reaction to a fresh sighting: floor of REACT_MIN seconds, growing with distance up to
+// REACT_MIN + REACT_SPAN, plus REACT_COVER when the target was hidden moments ago.
+const REACT_MIN = 0.35;
+const REACT_SPAN = 0.20;
+const REACT_RANGE = 40;
+const REACT_COVER = 0.22;
+// Aim error: wide for CORNER_TIME seconds after a fresh acquisition (a bot that just
+// turned a corner misses the opening burst), tightening only while the bot holds still.
+const CORNER_TIME = 0.7;
+const CORNER_PENALTY = 0.30;
+const AIM_STILL_TIGHTEN = 0.12;
+const AIM_STILL_RATE = 0.09;
+// Break off and reposition below this health instead of standing and trading.
+const LOW_HP = 40;
 
 export function createBots(scene, world, arsenal, opts = {}) {
   const callout = opts.callout || (() => {});
@@ -167,6 +182,7 @@ export function createBots(scene, world, arsenal, opts = {}) {
       route: def.route.slice(), routeIdx: 0,
       forcedPath: null, forcedIdx: 0,
       visibleTarget: null, lastSeenX: 0, lastSeenZ: 0, lostTime: 0, reactAt: 0,
+      aimStill: 0, acquireAt: -10,
       lastAttacker: null, lastDamagedAt: -99,
       retreatUntil: 0,
       strafeDir: 1, strafeTimer: 0,
@@ -219,6 +235,8 @@ export function createBots(scene, world, arsenal, opts = {}) {
       bot.stuckTime = 0;
       bot.objectiveKey = null;
       bot.heardAt = 0;
+      bot.aimStill = 0;
+      bot.acquireAt = -10;
     }
   }
 
@@ -294,16 +312,23 @@ export function createBots(scene, world, arsenal, opts = {}) {
 
   const _dir = new THREE.Vector3();
 
-  function botFire(bot, target, muzzleJitter) {
+  // One bot shot. `now` is the simulation clock, needed for the corner and stillness curves.
+  function botFire(bot, target, now) {
     const weapon = WEAPONS[bot.weaponId];
     if (bot.reloadT > 0 || bot.mag <= 0) return;
     bot.mag -= 1;
     bot.fireCd = weapon.interval;
 
     const dist = Math.hypot(target.pos.x - bot.pos.x, target.pos.z - bot.pos.z);
-    const moving = Math.hypot(target.velocityX || 0, target.velocityZ || 0) > 0.6;
-    // Fair duels: a shot lands a bit more than half the time up close, less at range.
-    const pHit = Math.max(0.1, Math.min(0.75, 0.58 - dist * 0.011 - (moving ? 0.22 : 0)));
+    const movingX = target.velocityX || 0, movingZ = target.velocityZ || 0;
+    const moving = movingX * movingX + movingZ * movingZ > 0.36;
+    // Wide for the first moments after a fresh sighting, tightening once the bot holds still.
+    const sinceAcquire = now - bot.acquireAt;
+    let pHit = 0.60 - dist * 0.012 - (moving ? 0.20 : 0);
+    if (sinceAcquire < CORNER_TIME) pHit -= CORNER_PENALTY * (1 - sinceAcquire / CORNER_TIME);
+    pHit += Math.min(AIM_STILL_TIGHTEN, bot.aimStill * AIM_STILL_RATE);
+    if (target.crouching) pHit -= 0.12;
+    pHit = Math.max(0.06, Math.min(0.58, pHit));
     const fromX = bot.pos.x + Math.cos(bot.yaw) * 0.18;
     const fromY = bot.pos.y + 1.28;
     const fromZ = bot.pos.z - Math.sin(bot.yaw) * 0.18;
@@ -357,7 +382,12 @@ export function createBots(scene, world, arsenal, opts = {}) {
     }
 
     if (target) {
-      if (bot.visibleTarget !== target) bot.reactAt = now + REACT_TIME;
+      if (bot.visibleTarget !== target) {
+        const coverBonus = bot.lostTime > 0.25 ? REACT_COVER : 0; // it was behind cover
+        bot.reactAt = now + Math.min(0.55, REACT_MIN + (bestDist / REACT_RANGE) * REACT_SPAN + coverBonus);
+        bot.acquireAt = now;
+        bot.aimStill = 0;
+      }
       bot.visibleTarget = target;
       bot.lastSeenX = target.pos.x;
       bot.lastSeenZ = target.pos.z;
@@ -368,8 +398,7 @@ export function createBots(scene, world, arsenal, opts = {}) {
     }
 
     const inCombat = !!target;
-    const lowHealth = bot.health < 35;
-    const underFire = now - bot.lastDamagedAt < 1.2;
+    const lowHealth = bot.health < LOW_HP;
 
     // Weapon upkeep.
     if (bot.reloadT > 0) bot.reloadT -= dt;
@@ -380,27 +409,32 @@ export function createBots(scene, world, arsenal, opts = {}) {
     let speed = MOVE_SPEED;
 
     if (inCombat) {
-      // Face the threat; stop or back off to shoot straight.
+      // Face the threat; hold at aim-ready range and strafe so it is not a standing duck.
       desiredYaw = Math.atan2(-(target.pos.x - bot.pos.x), -(target.pos.z - bot.pos.z));
       speed = bestDist > 7 ? MOVE_SPEED * 0.35 : 0; // creep in at range, stand to aim up close
-      if (lowHealth && underFire) {
-        bot.retreatUntil = now + 2.6;
+      if (speed === 0) bot.aimStill += dt; // held still on target: aim settles gradually
+      else bot.aimStill = 0;
+      if (lowHealth) {
+        // Hurt: break off and reposition instead of standing and trading.
+        bot.retreatUntil = now + 3.2;
         bot.visibleTarget = null;
+        bot.aimStill = 0;
       } else {
         bot.strafeTimer -= dt;
         if (bot.strafeTimer <= 0) {
           bot.strafeDir = -bot.strafeDir;
           bot.strafeTimer = 1.1 + Math.random() * 1.3;
         }
-        // Shoot in bursts once the reaction delay has passed.
+        // Fire 3-5 round bursts once the reaction delay has passed, then hold fire.
         if (phase === 'live' && bot.reloadT <= 0 && now >= bot.reactAt) {
           if (bot.mag <= 0) {
             bot.reloadT = WEAPONS[bot.weaponId].reload;
+            bot.burstLeft = 0;
           } else if (bot.burstCd <= 0 && bot.fireCd <= 0) {
-            if (bot.burstLeft <= 0) bot.burstLeft = 3;
-            botFire(bot, target, 0);
+            if (bot.burstLeft <= 0) bot.burstLeft = 3 + Math.floor(Math.random() * 3);
+            botFire(bot, target, now);
             bot.burstLeft -= 1;
-            if (bot.burstLeft <= 0) bot.burstCd = WEAPONS[bot.weaponId].burstPause || 0.55;
+            if (bot.burstLeft <= 0) bot.burstCd = 0.30 + Math.random() * 0.30;
           }
         }
       }
@@ -460,6 +494,7 @@ export function createBots(scene, world, arsenal, opts = {}) {
 
     if (bot.reloadT <= 0 && bot.mag === 0 && bot.reserve > 0) {
       bot.reloadT = WEAPONS[bot.weaponId].reload;
+      bot.burstLeft = 0;
     }
     if (bot.reloadT > 0 && bot.reloadT <= dt + 1 / 60) {
       const need = WEAPONS[bot.weaponId].mag - bot.mag;
