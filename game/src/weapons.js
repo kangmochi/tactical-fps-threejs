@@ -49,7 +49,7 @@ const PART_TORSO = 0, PART_HEAD = 1, PART_LEGS = 2;
 const PART_MULT = [1, 2.6, 0.75];
 
 export function createArsenal(scene, world) {
-  // --- Tracers: thin stretched boxes that fade fast. ---
+  // --- Tracers: thin stretched boxes that fade fast (60 ms). ---
   const tracerGeo = new THREE.BoxGeometry(0.025, 0.025, 1);
   const tracerMat = new THREE.MeshBasicMaterial({ color: 0xffd27a, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false });
   const tracers = [];
@@ -57,9 +57,44 @@ export function createArsenal(scene, world) {
     const mesh = new THREE.Mesh(tracerGeo, tracerMat.clone());
     mesh.visible = false;
     scene.add(mesh);
-    tracers.push({ mesh, life: 0, maxLife: 0.09 });
+    tracers.push({ mesh, life: 0, maxLife: 0.06 });
   }
   let tracerIdx = 0;
+
+  // --- Dust puffs: soft grey sprites that expand and thin out (impacts on world). ---
+  const puffTex = makePuffTexture();
+  const dusts = [];
+  for (let i = 0; i < 24; i += 1) {
+    const mat = new THREE.SpriteMaterial({ map: puffTex, color: 0xa9a294, transparent: true, opacity: 0.85, depthWrite: false });
+    const mesh = new THREE.Sprite(mat);
+    mesh.visible = false;
+    scene.add(mesh);
+    dusts.push({ mesh, life: 0, maxLife: 0.7 });
+  }
+  let dustIdx = 0;
+
+  // --- Blood puffs: darker, quicker, on body hits. ---
+  const bloods = [];
+  for (let i = 0; i < 16; i += 1) {
+    const mat = new THREE.SpriteMaterial({ map: puffTex, color: 0x6e1410, transparent: true, opacity: 0.9, depthWrite: false });
+    const mesh = new THREE.Sprite(mat);
+    mesh.visible = false;
+    scene.add(mesh);
+    bloods.push({ mesh, life: 0, maxLife: 0.5 });
+  }
+  let bloodIdx = 0;
+
+  // --- Shell casings: eject right, bounce once, fade out. ---
+  const casingGeo = new THREE.BoxGeometry(0.02, 0.011, 0.011);
+  const casingMat = new THREE.MeshStandardMaterial({ color: 0xb8893a, roughness: 0.35, metalness: 0.9 });
+  const casings = [];
+  for (let i = 0; i < 24; i += 1) {
+    const mesh = new THREE.Mesh(casingGeo, casingMat);
+    mesh.visible = false;
+    scene.add(mesh);
+    casings.push({ mesh, life: 0, maxLife: 2.4, vy: 0, vx: 0, vz: 0, bounced: false });
+  }
+  let casingIdx = 0;
 
   // --- Sparks: additive sprites that flash and expand (always camera-facing). ---
   const sparkTex = makeSparkTexture();
@@ -114,7 +149,40 @@ export function createArsenal(scene, world) {
     t.mesh.lookAt(toX, toY, toZ);
     t.mesh.material.opacity = 0.95;
     t.mesh.material.color.setHex(color || 0xffd27a);
-    t.life = t.maxLife = 0.09;
+    t.life = t.maxLife = 0.06;
+  }
+
+  function spawnDust(x, y, z, big) {
+    const d = dusts[dustIdx];
+    dustIdx = (dustIdx + 1) % dusts.length;
+    d.mesh.visible = true;
+    d.mesh.position.set(x, y, z);
+    d.mesh.scale.setScalar(big ? 0.8 : 0.45);
+    d.mesh.material.opacity = 0.85;
+    d.life = d.maxLife = big ? 0.9 : 0.6;
+  }
+
+  function spawnBlood(x, y, z) {
+    const b = bloods[bloodIdx];
+    bloodIdx = (bloodIdx + 1) % bloods.length;
+    b.mesh.visible = true;
+    b.mesh.position.set(x, y, z);
+    b.mesh.scale.setScalar(0.34);
+    b.mesh.material.opacity = 0.9;
+    b.life = b.maxLife = 0.45;
+  }
+
+  // Eject a casing to the shooter's right. vx/vz passed in world space.
+  function spawnCasing(x, y, z, vx, vy, vz) {
+    const s = casings[casingIdx];
+    casingIdx = (casingIdx + 1) % casings.length;
+    s.mesh.visible = true;
+    s.mesh.position.set(x, y, z);
+    s.mesh.rotation.set(Math.random() * 3, Math.random() * 3, Math.random() * 3);
+    s.mesh.scale.setScalar(1);
+    s.vx = vx; s.vy = vy; s.vz = vz;
+    s.bounced = false;
+    s.life = s.maxLife;
   }
 
   function spawnSpark(x, y, z, big) {
@@ -223,6 +291,50 @@ export function createArsenal(scene, world) {
       t.mesh.material.opacity = Math.max(0, (t.life / t.maxLife) * 0.95);
       if (t.life <= 0) t.mesh.visible = false;
     }
+    for (const d of dusts) {
+      if (d.life <= 0) continue;
+      d.life -= dt;
+      const k = Math.max(0, d.life / d.maxLife);
+      d.mesh.material.opacity = k * 0.85;
+      d.mesh.scale.setScalar(d.mesh.scale.x + dt * 1.4);
+      if (d.life <= 0) d.mesh.visible = false;
+    }
+    for (const b of bloods) {
+      if (b.life <= 0) continue;
+      b.life -= dt;
+      const k = Math.max(0, b.life / b.maxLife);
+      b.mesh.material.opacity = k * 0.9;
+      b.mesh.scale.setScalar(b.mesh.scale.x + dt * 0.9);
+      if (b.life <= 0) b.mesh.visible = false;
+    }
+    for (const s of casings) {
+      if (s.life <= 0) continue;
+      s.life -= dt;
+      s.vy -= 12 * dt;
+      s.mesh.position.x += s.vx * dt;
+      s.mesh.position.y += s.vy * dt;
+      s.mesh.position.z += s.vz * dt;
+      s.mesh.rotation.x += dt * 9;
+      s.mesh.rotation.z += dt * 7;
+      if (s.mesh.position.y < 0.012 && s.vy < 0) {
+        if (s.bounced) {
+          s.mesh.position.y = 0.012;
+          s.vy = 0;
+          s.vx *= 0.4;
+          s.vz *= 0.4;
+        } else {
+          s.mesh.position.y = 0.012;
+          s.vy = -s.vy * 0.38;
+          s.vx *= 0.55;
+          s.vz *= 0.55;
+          s.bounced = true;
+        }
+      }
+      // Fade in the last 0.8 s of life.
+      const fade = Math.min(1, s.life / 0.8);
+      s.mesh.scale.setScalar(fade);
+      if (s.life <= 0) s.mesh.visible = false;
+    }
     for (const s of sparks) {
       if (s.life <= 0) continue;
       s.life -= dt;
@@ -271,6 +383,9 @@ export function createArsenal(scene, world) {
     partDamage,
     spawnTracer,
     spawnSpark,
+    spawnDust,
+    spawnBlood,
+    spawnCasing,
     spawnBoom,
     throwGrenade,
     update,
@@ -281,6 +396,23 @@ export function createArsenal(scene, world) {
     PART_TORSO,
     PART_LEGS,
   };
+}
+
+// Soft blotch sprite for dust and blood. No assets.
+function makePuffTexture() {
+  const canvas = document.createElement('canvas');
+  canvas.width = 64;
+  canvas.height = 64;
+  const ctx = canvas.getContext('2d');
+  const grad = ctx.createRadialGradient(32, 32, 1, 32, 32, 30);
+  grad.addColorStop(0, 'rgba(255,255,255,0.95)');
+  grad.addColorStop(0.45, 'rgba(255,255,255,0.55)');
+  grad.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 64, 64);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
 }
 
 // Radial spark texture drawn at runtime; no assets.

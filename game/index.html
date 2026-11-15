@@ -94,7 +94,9 @@
   .bar.armour i { background: var(--amber); }
   .bar i.low { background: var(--red); }
   #money-row { display: flex; align-items: baseline; gap: 10px; margin-top: 6px; border-top: 1px solid var(--line); padding-top: 6px; }
-  #hud-money { font-family: var(--font-mono); font-size: 19px; font-weight: 600; color: var(--amber); }
+  #hud-money { display: inline-block; font-family: var(--font-mono); font-size: 19px; font-weight: 600; color: var(--amber); }
+  #hud-money.tick { animation: money-pop 420ms ease-out; }
+  @keyframes money-pop { 0% { transform: scale(1.4); color: #ffe6ae; } 100% { transform: scale(1); } }
 
   /* --- Bottom-right: ammo --- */
   #ammo { position: fixed; right: 28px; bottom: 22px; display: flex; flex-direction: column; align-items: flex-end;
@@ -102,18 +104,27 @@
   #ammo-readout { display: flex; align-items: baseline; gap: 8px; font-family: var(--font-mono); }
   #ammo-mag { font-size: 52px; line-height: 1; font-weight: 600; letter-spacing: -0.03em; }
   #ammo-reserve { font-size: 17px; color: var(--muted); }
-  #ammo.low #ammo-mag { color: var(--amber); }
+  #ammo.low #ammo-mag { color: var(--amber); animation: mag-flash 700ms steps(2) infinite; }
+  @keyframes mag-flash { 50% { color: #8a6a1e; } }
   #ammo.empty #ammo-mag { color: var(--red); }
   #weapon-name { font-size: 10px; letter-spacing: .28em; color: var(--muted); margin-bottom: 2px; }
   #reload-label { font-size: 10px; letter-spacing: .3em; color: var(--amber); margin-top: 2px;
     animation: blink 700ms steps(2) infinite; }
   @keyframes blink { 50% { opacity: .35; } }
 
-  /* --- Bomb status chip under the timer --- */
-  #bomb-status { position: fixed; left: 50%; top: 78px; transform: translateX(-50%);
-    padding: 4px 16px 5px; font-family: var(--font-mono); font-size: 12px; letter-spacing: .14em;
-    color: #ffb0a6; background: rgba(40, 10, 6, .82); border: 1px solid #5a1f16; border-radius: var(--radius); }
+  /* --- Bomb status chip under the timer: progress ring + label --- */
+  #bomb-status { position: fixed; left: 50%; top: 76px; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 10px; padding: 5px 14px 5px 6px;
+    font-family: var(--font-mono); font-size: 12px; letter-spacing: .14em;
+    color: #ffb0a6; background: rgba(40, 10, 6, .82); border: 1px solid #5a1f16; border-radius: 20px; }
   #bomb-status.critical #bomb-text { color: var(--red); animation: blink 400ms steps(2) infinite; }
+  #bomb-status.defusing { border-color: #17524a; background: rgba(6, 34, 30, .84); }
+  #bomb-ring { width: 34px; height: 34px; transform: rotate(-90deg); }
+  #bomb-ring .track { stroke: rgba(255, 255, 255, .12); fill: none; stroke-width: 3; }
+  #bomb-ring .prog { stroke: var(--amber); fill: none; stroke-width: 3; stroke-linecap: round;
+    stroke-dasharray: 94.25; transition: stroke-dashoffset 120ms linear; }
+  #bomb-status.defusing .prog { stroke: var(--teal); }
+  #bomb-status.defused { border-color: #17524a; }
 
   /* --- Hold-to-plant / defuse bar --- */
   #hold-wrap { position: fixed; left: 50%; bottom: 120px; transform: translateX(-50%); width: 300px;
@@ -135,11 +146,26 @@
   .overlay { position: fixed; inset: 0; z-index: 5; display: grid; place-items: center; padding: 24px;
     background: color-mix(in srgb, var(--bg) 84%, transparent); }
   .overlay[hidden] { display: none; }
+  #buy-menu { background: rgba(5, 9, 14, .78); }
+  /* The cover: map plays behind, text sits on a left-anchored scrim. */
+  #menu { place-items: center start; padding: 0; background: transparent; }
+  #menu::before { content: ''; position: absolute; inset: 0; pointer-events: none;
+    background: linear-gradient(90deg, rgba(5, 9, 14, .93) 0%, rgba(5, 9, 14, .86) 34%, rgba(5, 9, 14, .35) 62%, rgba(5, 9, 14, .05) 100%); }
+  #menu::after { content: ''; position: absolute; inset: 0; pointer-events: none;
+    background: radial-gradient(120% 90% at 50% 110%, rgba(255, 140, 40, .14), transparent 55%); }
+  #menu .panel { position: relative; width: min(600px, 92vw); max-height: 94vh; border: none; background: transparent;
+    box-shadow: none; padding: 40px 44px; backdrop-filter: none; overflow: auto; margin-left: 2vw; }
+  .kicker { margin: 0 0 10px; font-size: 10px; letter-spacing: .42em; color: var(--amber); }
+  .kicker b { color: var(--teal); font-weight: 600; }
+  .headphones { margin: 18px 0 0; padding-top: 16px; border-top: 1px solid rgba(232, 230, 221, .12);
+    font-size: 11px; letter-spacing: .18em; color: var(--muted); display: flex; align-items: center; gap: 10px; }
+  .headphones .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 8px var(--amber); }
+  .headphones b { color: var(--ink); letter-spacing: .18em; font-weight: 600; }
+  .cover-foot { margin: 12px 0 0; font-family: var(--font-mono); font-size: 10px; letter-spacing: .14em; color: #5f6c7a; }
   .panel { width: min(560px, 100%); max-height: 92vh; overflow: auto; padding: 28px 32px; background: var(--panel);
     border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 24px 80px rgba(0,0,0,.6); }
-  .panel h1 { margin: 0; font-size: 46px; line-height: 1.02; font-weight: 800; letter-spacing: .1em; }
-  .panel h1 .protocol { color: var(--teal); }
-  .tagline { margin: 8px 0 20px; font-size: 12px; letter-spacing: .3em; color: var(--amber); }
+  .panel h1 { margin: 0; font-size: 46px; line-height: 1.02; font-weight: 800; letter-spacing: .1em; text-shadow: 0 2px 30px rgba(0, 0, 0, .55); }
+  .panel h1 .protocol { color: var(--teal); text-shadow: 0 0 34px rgba(31, 211, 189, .35); }
   .panel p { margin: 0 0 18px; font-size: 14px; line-height: 1.55; color: var(--muted); max-width: 52ch; }
 
   #play { font: inherit; font-weight: 700; letter-spacing: .12em; padding: 13px 34px; font-size: 15px;
@@ -161,10 +187,11 @@
   #buy-items { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
   .buy-item { display: grid; grid-template-columns: 64px 1fr auto auto; align-items: center; gap: 12px;
     padding: 7px 10px; border: 1px solid transparent; border-radius: var(--radius); background: var(--panel-2); }
-  .buy-item.broke { opacity: .55; }
+  .buy-item.broke { opacity: .66; }
   .buy-kind { font-size: 9px; letter-spacing: .18em; color: var(--muted); }
   .buy-name { font-size: 14px; font-weight: 600; }
   .buy-state { font-family: var(--font-mono); font-size: 10px; letter-spacing: .1em; color: var(--teal); min-width: 48px; text-align: right; }
+  .buy-state.nofunds { color: var(--red); }
   .buy-button { font-family: var(--font-mono); font-size: 13px; padding: 6px 12px; border: 1px solid var(--amber);
     border-radius: 4px; background: transparent; color: var(--amber); cursor: pointer; min-width: 76px; }
   .buy-button:hover:not(:disabled) { background: var(--amber); color: #0e141b; }
@@ -221,7 +248,13 @@
     <div id="timer-phase">BUY PHASE</div>
   </div>
 
-  <div id="bomb-status" hidden><span id="bomb-text">BOMB · SITE A · 0:40</span></div>
+  <div id="bomb-status" hidden>
+    <svg id="bomb-ring" viewBox="0 0 36 36" aria-hidden="true">
+      <circle class="track" cx="18" cy="18" r="15"></circle>
+      <circle class="prog" id="bomb-ring-prog" cx="18" cy="18" r="15" stroke-dashoffset="0"></circle>
+    </svg>
+    <span id="bomb-text">BOMB · SITE A · 0:40</span>
+  </div>
 
   <div id="killfeed"></div>
 
@@ -306,9 +339,10 @@
 <div id="menu" class="overlay">
   <section class="panel" role="dialog" aria-modal="true" aria-labelledby="overlay-title">
     <h1 id="overlay-title">SODIUM<br><span class="protocol">PROTOCOL</span></h1>
-    <p class="tagline">HALDEN YARD · ROUND-BASED TACTICAL</p>
-    <p>Kestrel versus Cinder in a frozen freight yard. Two bomb sites, one mid catwalk,
-      three lanes and nowhere to hide. Rounds are short; your aim is not negotiable.</p>
+    <p class="kicker"><b>KESTREL</b> VS <b style="color:var(--red)">CINDER</b> · HALDEN YARD</p>
+    <p>Two teams meet in a frozen freight yard at dusk. One bomb site east, one west,
+      a catwalk down the middle — plant or hold, first to four rounds.
+      Your aim is not negotiable.</p>
     <button id="play" type="button">CLICK TO PLAY</button>
     <ul class="keys">
       <li><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> Move</li>
@@ -323,6 +357,8 @@
       <li><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd><kbd>4</kbd> Weapons</li>
       <li><kbd>Esc</kbd> Release mouse</li>
     </ul>
+    <p class="headphones"><span class="dot"></span><b>BEST WITH HEADPHONES</b> — footsteps, reloads and the bomb timer carry the fight</p>
+    <p class="cover-foot">A EAST · B WEST · FIRST TO 4</p>
   </section>
 </div>
 

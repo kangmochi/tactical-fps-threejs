@@ -40,6 +40,7 @@ export function createHud() {
     sbCinderScore: document.getElementById('sb-cinder-score'),
     bombStatus: document.getElementById('bomb-status'),
     bombText: document.getElementById('bomb-text'),
+    bombRing: document.getElementById('bomb-ring-prog'),
     holdWrap: document.getElementById('hold-wrap'),
     holdLabel: document.getElementById('hold-label'),
     holdFill: document.getElementById('hold-fill'),
@@ -49,7 +50,7 @@ export function createHud() {
   const cache = {
     time: '', phase: '', kScore: -1, cScore: -1, round: -1, money: -1,
     mag: -1, reserve: -1, health: -1, armour: -1, reload: false,
-    weapon: '', bomb: '', hold: -1, spread: -1,
+    weapon: '', bomb: '', hold: -1, spread: -1, ring: -1,
   };
   let hitmarkerTimer = 0;
 
@@ -82,6 +83,10 @@ export function createHud() {
     if (cache.money !== game.money) {
       cache.money = game.money;
       el.money.textContent = '$' + game.money.toLocaleString('en-US');
+      // Tick: pop the readout so a purchase lands visually.
+      el.money.classList.remove('tick');
+      void el.money.offsetWidth;
+      el.money.classList.add('tick');
     }
 
     // Weapon name + ammo readout.
@@ -149,20 +154,34 @@ export function createHud() {
       el.scoreCinder.textContent = String(cache.cScore);
     }
 
-    // Bomb chip under the timer.
+    // Bomb chip under the timer: defusing state wins the label; the ring tracks
+    // what is running — defuse progress when defused, otherwise the fuse burning down.
     const bomb = game.bombState;
     if (bomb && bomb.planted) {
       const bs = Math.ceil(bomb.timer);
-      const label = 'BOMB · SITE ' + bomb.site + ' · 0:' + String(Math.max(0, bs)).padStart(2, '0');
+      const defusing = bomb.holding && bomb.holdLabel.indexOf('DEFUSING') !== -1;
+      const RING_C = 94.25; // 2 * pi * 15
+      const label = defusing
+        ? 'DEFUSING · SITE ' + bomb.site
+        : 'BOMB · SITE ' + bomb.site + ' · 0:' + String(Math.max(0, bs)).padStart(2, '0');
       if (cache.bomb !== label) {
         cache.bomb = label;
         el.bombText.textContent = label;
         el.bombStatus.hidden = false;
-        el.bombStatus.classList.toggle('critical', bs <= 10);
+        el.bombStatus.classList.toggle('critical', !defusing && bs <= 10);
+        el.bombStatus.classList.toggle('defusing', defusing);
+      }
+      const fraction = defusing ? bomb.defuseProgress : Math.max(0, Math.min(1, bomb.timer / 40));
+      const offset = RING_C * (1 - fraction);
+      if (cache.ring < 0 || Math.abs(cache.ring - offset) > 0.5) {
+        cache.ring = offset;
+        el.bombRing.style.strokeDashoffset = String(offset);
       }
     } else if (cache.bomb !== '') {
       cache.bomb = '';
+      cache.ring = -1;
       el.bombStatus.hidden = true;
+      el.bombStatus.classList.remove('critical', 'defusing');
     }
 
     // Hold-to-plant / defuse progress bar.
@@ -251,7 +270,7 @@ export function createHud() {
       html += `<li class="buy-item${affordable || owned ? '' : ' broke'}">` +
         `<span class="buy-kind">${item.kind}</span>` +
         `<span class="buy-name">${item.name}</span>` +
-        `<span class="buy-state">${state}</span>` +
+        `<span class="buy-state${state === 'NO FUNDS' ? ' nofunds' : ''}">${state}</span>` +
         `<button type="button" class="buy-button" data-id="${item.id}" ${owned ? 'disabled' : ''}>` +
         `$${item.price.toLocaleString('en-US')}</button></li>`;
     }

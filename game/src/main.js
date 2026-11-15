@@ -13,6 +13,8 @@ import { createWorld } from './world.js';
 import { createHud } from './hud.js';
 import { createBots } from './bots.js';
 import { createRounds } from './rounds.js';
+import { createAudio } from './audio.js';
+import { createViewmodel } from './viewmodel.js';
 
 const STEP = 1 / 60;
 const container = document.getElementById('game');
@@ -22,12 +24,13 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.25;
+renderer.toneMappingExposure = 1.42;
 container.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0e141b);
-scene.fog = new THREE.Fog(0x0e141b, 40, 125);
+scene.background = new THREE.Color(0x0b1018);
+// Haze-matched linear fog: lanes gain depth, the yard never shows a hard edge.
+scene.fog = new THREE.Fog(0x2c211b, 25, 90);
 
 const camera = new THREE.PerspectiveCamera(74, window.innerWidth / window.innerHeight, 0.08, 220);
 camera.rotation.order = 'YXZ';
@@ -41,80 +44,15 @@ const canvas = renderer.domElement;
 let buyOpen = false;
 let scoreboardOpen = false;
 let lastPhase = 'menu'; // last phase the HUD chrome was set for
+let hudChromeVisible = true; // HUD root hidden during the menu / cover
 let simTime = 0;
 
-// --- Tiny synthesized audio: no assets, created on first user gesture. ---
-function createAudio() {
-  let ctx = null;
-  let noise = null;
-  function ac() {
-    if (!ctx) {
-      try {
-        ctx = new (window.AudioContext || window.webkitAudioContext)();
-        const len = Math.floor(ctx.sampleRate * 0.18);
-        noise = ctx.createBuffer(1, len, ctx.sampleRate);
-        const data = noise.getChannelData(0);
-        for (let i = 0; i < len; i += 1) data[i] = (Math.random() * 2 - 1) * (1 - i / len);
-      } catch {
-        ctx = null;
-      }
-    }
-    return ctx;
-  }
-  function tone(freq, type, duration, gain, when = 0) {
-    const c = ac();
-    if (!c) return;
-    const t = c.currentTime + when;
-    const osc = c.createOscillator();
-    const g = c.createGain();
-    osc.type = type;
-    osc.frequency.setValueAtTime(freq, t);
-    g.gain.setValueAtTime(0, t);
-    g.gain.linearRampToValueAtTime(gain, t + 0.004);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + duration);
-    osc.connect(g).connect(c.destination);
-    osc.start(t);
-    osc.stop(t + duration + 0.02);
-  }
-  return {
-    unlock() { ac(); },
-    shot() {
-      const c = ac();
-      if (!c) return;
-      const src = c.createBufferSource();
-      src.buffer = noise;
-      const g = c.createGain();
-      const t = c.currentTime;
-      g.gain.setValueAtTime(0.5, t);
-      g.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
-      src.connect(g).connect(c.destination);
-      src.start(t);
-      tone(68, 'square', 0.09, 0.22);
-    },
-    slash() { tone(340, 'triangle', 0.05, 0.14); },
-    thump() { tone(95, 'sine', 0.14, 0.2); },
-    dry() { tone(1900, 'square', 0.025, 0.08); },
-    reload() { tone(520, 'square', 0.04, 0.12); tone(760, 'square', 0.045, 0.12, 0.16); },
-    hit() { tone(1450, 'sine', 0.055, 0.16); },
-    buy() { tone(880, 'sine', 0.06, 0.12); tone(1320, 'sine', 0.07, 0.1, 0.07); },
-    plant() { tone(660, 'square', 0.06, 0.14); tone(660, 'square', 0.06, 0.14, 0.18); },
-    beep(freq) { tone(freq || 880, 'sine', 0.05, 0.1); },
-    explode() {
-      const c = ac();
-      if (!c) return;
-      const src = c.createBufferSource();
-      src.buffer = noise;
-      const g = c.createGain();
-      const t = c.currentTime;
-      g.gain.setValueAtTime(0.9, t);
-      g.gain.exponentialRampToValueAtTime(0.001, t + 0.6);
-      src.connect(g).connect(c.destination);
-      src.start(t);
-      tone(42, 'sine', 0.5, 0.4);
-    },
-    round() { tone(392, 'sine', 0.16, 0.16); tone(523, 'sine', 0.18, 0.16, 0.14); },
-  };
-}
+// --- Viewmodel: the rifle in frame. The camera joins the scene so its child renders. ---
+scene.add(camera);
+const viewmodel = createViewmodel(camera);
+
+// --- Shell casings and footsteps share scratch state; no per-frame allocation. ---
+let footstepTimer = 0;
 const audio = createAudio();
 
 // --- Entities -----------------------------------------------------------------
@@ -135,6 +73,12 @@ const playerTarget = {
   takeDamage(dmg, _part, attacker) {
     this.lastDamagedBy = attacker || null;
     applyDamage(dmg);
+    if (DEMO_GOD && G.player.health < 1) G.player.health = 1;
+    arsenal.spawnBlood(
+      player.state.position.x - Math.sin(player.state.yaw) * 0.5,
+      player.state.position.y + 1.15,
+      player.state.position.z - Math.cos(player.state.yaw) * 0.5,
+    );
     return G.player.health;
   },
 };
@@ -277,6 +221,19 @@ window.addEventListener('keydown', (event) => {
   if (event.code === 'Escape' && buyOpen) toggleBuy(false);
 });
 
+// Grenade trajectory preview: preallocated dot strip, visible only with the HE equipped.
+const ARC_POINTS = 26;
+const arcPos = new Float32Array(ARC_POINTS * 3);
+const arcGeo = new THREE.BufferGeometry();
+arcGeo.setAttribute('position', new THREE.BufferAttribute(arcPos, 3));
+const arc = new THREE.Points(
+  arcGeo,
+  new THREE.PointsMaterial({ color: 0xffc46b, size: 0.08, transparent: true, opacity: 0.85, depthWrite: false, blending: THREE.AdditiveBlending }),
+);
+arc.visible = false;
+arc.frustumCulled = false;
+scene.add(arc);
+
 const fireState = { cooldown: 0, burstLeft: 0, burstCd: 0, prevFiring: false };
 const tmpDir = new THREE.Vector3();
 const tmpMuzzle = new THREE.Vector3();
@@ -285,6 +242,38 @@ const isGunId = (id) => GUN_IDS.includes(id);
 
 function currentGun() {
   return isGunId(G.curWeapon) ? G.guns[G.curWeapon] : null;
+}
+
+// Ballistic preview for the HE grenade, matching the throw in fireOnce. No allocation:
+// the dot strip is one buffer rewritten per frame while the grenade is in hand.
+function updateArc() {
+  if (G.curWeapon !== 'he' || G.grenades <= 0 || G.phase !== 'live') {
+    arc.visible = false;
+    return;
+  }
+  arc.visible = true;
+  const pitch = player.state.pitch;
+  const cosP = Math.cos(pitch);
+  const dx = -Math.sin(player.state.yaw) * cosP;
+  const dy = Math.sin(pitch) + 0.18;
+  const dz = -Math.cos(player.state.yaw) * cosP;
+  const len = Math.hypot(dx, dy, dz) || 1;
+  let px = camera.position.x + (dx / len) * 0.5;
+  let py = camera.position.y - 0.1;
+  let pz = camera.position.z + (dz / len) * 0.5;
+  let vx = (dx / len) * 15, vy = (dy / len) * 15 + 2.5, vz = (dz / len) * 15;
+  const step = 0.085;
+  for (let i = 0; i < ARC_POINTS; i += 1) {
+    vy -= 14.5 * step;
+    px += vx * step;
+    py += vy * step;
+    pz += vz * step;
+    if (py < 0.06) py = 0.06;
+    arcPos[i * 3] = px;
+    arcPos[i * 3 + 1] = py;
+    arcPos[i * 3 + 2] = pz;
+  }
+  arcGeo.attributes.position.needsUpdate = true;
 }
 
 // Spread in pixels for the dynamic crosshair.
@@ -315,6 +304,7 @@ function fireOnce() {
     }
     if (best) {
       damageTarget(best, WEAPONS.knife.damage, 0, playerTarget);
+      arsenal.spawnBlood(best.pos.x, best.pos.y + 1.1, best.pos.z);
       arsenal.spawnSpark(best.pos.x, best.pos.y + 1.1, best.pos.z, false);
       hud.markHit();
       audio.thump();
@@ -373,15 +363,31 @@ function fireOnce() {
   if (hit.kind === 'body' && hit.target) {
     const dmg = arsenal.partDamage(w, hit.part) * rangeFalloff(w, hit.dist);
     damageTarget(hit.target, dmg, hit.part, playerTarget);
+    arsenal.spawnBlood(hit.x, hit.y, hit.z);
     arsenal.spawnSpark(hit.x, hit.y, hit.z, hit.part === arsenal.PART_HEAD);
     hud.markHit();
-    audio.hit();
+    if (hit.part === arsenal.PART_HEAD) audio.headshot();
+    else audio.hit();
   } else if (hit.kind === 'world') {
     arsenal.spawnSpark(hit.x, hit.y, hit.z, false);
+    arsenal.spawnDust(hit.x, hit.y, hit.z, false);
   }
 
   player.recoil(w.recoilPitch * (0.8 + Math.random() * 0.45), (Math.random() - 0.5) * w.recoilYaw * 2, w.heat);
-  audio.shot();
+  const gunKind = id === 'p9' ? 'pistol' : id === 'k9' ? 'smg' : 'rifle';
+  audio.shot(gunKind);
+  viewmodel.fire();
+  // Eject a casing to the shooter's right, biased forward and up.
+  const cosY = Math.cos(player.state.yaw);
+  const sinY = Math.sin(player.state.yaw);
+  arsenal.spawnCasing(
+    from.x - sinY * 0.25 + cosY * 0.3,
+    from.y - 0.12,
+    from.z - cosY * 0.25 - sinY * 0.3,
+    cosY * (1.1 + Math.random() * 0.7) - sinY * 0.6,
+    1.9 + Math.random() * 0.5,
+    -sinY * (1.1 + Math.random() * 0.7) - cosY * 0.6,
+  );
   arsenal.noise(from.x, from.z, 'shot');
 }
 
@@ -423,12 +429,24 @@ function switchWeapon(id) {
   fireState.burstCd = 0;
 }
 
-// --- Demo autopilot: the ?demo=1 URL flag walks the player into the fight. ---
-const DEMO_ROUTE = [
-  { x: -8, z: 13 }, { x: -11, z: 11 }, { x: -13, z: 1.5 }, { x: -17.5, z: 0.9 },
-  { x: -18, z: 1 }, { x: -14, z: -11 }, { x: -23.5, z: -15 },
-];
-const demoState = { routeIdx: 0 };
+// --- Demo autopilot: the ?demo= URL flag walks the player into the fight. ---
+// ?demo=1 walks the default route; ?demo=fight same route but the player cannot die
+// (headless screenshots); ?demo=bomb takes the east lane to site A and holds E to
+// plant; ?demo=buy auto-opens the buy menu on freeze. Single token, so plain URLs work.
+const DEMO_MODE = (window.location.search.match(/demo=([a-z0-9]+)/) || [])[1] || '';
+const DEMO_RUN = DEMO_MODE !== '';
+const DEMO_GOD = DEMO_MODE === 'fight' || DEMO_MODE === 'bomb';
+const DEMO_EAST = DEMO_MODE === 'bomb' || DEMO_MODE === 'buy';
+const DEMO_ROUTE = DEMO_EAST
+  ? [
+    { x: 6, z: 10 }, { x: 11, z: 4 }, { x: 14, z: -2 }, { x: 18, z: -8 },
+    { x: 21.5, z: -11.5 }, { x: 23.5, z: -13.8 },
+  ]
+  : [
+    { x: -8, z: 13 }, { x: -11, z: 11 }, { x: -13, z: 1.5 }, { x: -17.5, z: 0.9 },
+    { x: -18, z: 1 }, { x: -14, z: -11 }, { x: -23.5, z: -15 },
+  ];
+const demoState = { routeIdx: 0, bombTp: false };
 const demoKeys = new Set();
 const demoOut = { move: false, fire: false, holdE: false };
 
@@ -437,6 +455,21 @@ function demoFireControl(dt, out) {
   out.fire = false;
   out.holdE = false;
   const px = player.state.position.x, pz = player.state.position.z;
+
+  // The bomb harness never fights: hold E at the site, keep the view on the plate.
+  if (DEMO_MODE === 'bomb') {
+    out.move = false;
+    const nearAE = Math.hypot(px - 23.5, pz + 15) < 3.2;
+    const nearBE = Math.hypot(px + 23.5, pz + 15) < 3.2;
+    if (!rounds.planted && rounds.carrierId === 'player' && (nearAE || nearBE)) {
+      out.holdE = true;
+    } else {
+      out.holdE = false;
+      // Stand still at the site, eyes on the plate; bots can shoot us, we do nothing.
+      return;
+    }
+    return;
+  }
 
   // On a site with the bomb: keep it there.
   const nearA = Math.hypot(px - 23.5, pz + 15) < 3.2;
@@ -511,6 +544,13 @@ function frame(now) {
   camera.position.set(player.state.position.x, player.state.position.y + player.state.eye, player.state.position.z);
   camera.rotation.set(player.state.pitch, player.state.yaw, 0);
 
+  // The rifle follows its own motion; the HE throw shows a dotted arc.
+  const isGun = G.curWeapon === 'p9' || G.curWeapon === 'k9' || G.curWeapon === 'vk7';
+  viewmodel.setVisible(isGun);
+  const moveSpeed = Math.hypot(player.state.velocity.x, player.state.velocity.z);
+  viewmodel.update(frameTime, moveSpeed, player.state.crouching, player.state.onGround);
+  updateArc();
+
   hud.draw(G, frameTime, crosshairSpreadPx());
   renderer.render(scene, camera);
 }
@@ -528,7 +568,10 @@ function simulate(dt) {
     hud.setScoreboard(scoreboardOpen, G);
   }
   if (pressed.has('KeyR')) {
-    if (startReload()) audio.reload();
+    if (startReload()) {
+      audio.reload();
+      viewmodel.reload(WEAPONS[G.curWeapon].reload);
+    }
   }
   if (pressed.has('Digit1')) switchWeapon(G.owned[G.primary] ? G.primary : 'p9');
   if (pressed.has('Digit2')) switchWeapon('p9');
@@ -540,13 +583,19 @@ function simulate(dt) {
   if (look.x || look.y) player.look(look.x, look.y);
 
   // Demo flag: the player is steered by a small scripted brain instead of the mouse.
-  const demo = window.location.search.indexOf('demo=1') !== -1 || window.location.hash === '#demo';
+  const demo = DEMO_RUN || window.location.hash === '#demo';
   let moveKeys = input.state.keys;
   let holdKey = input.state.keys.has('KeyE');
   let wantFire = input.state.firing;
 
   if (demo) {
     demoKeys.clear();
+    // Bomb-run harness: step straight onto site A when the round goes live.
+    if (DEMO_MODE === 'bomb' && G.phase === 'live' && !demoState.bombTp) {
+      demoState.bombTp = true;
+      player.respawn(22.3, 0, -13.2, -0.59);
+      player.state.pitch = -0.5; // frame the bomb and the painted A under it
+    }
     if (G.phase === 'live' && G.player.health > 0) {
       demoFireControl(dt, demoOut);
       if (demoOut.move) demoKeys.add('KeyW');
@@ -554,11 +603,31 @@ function simulate(dt) {
       holdKey = demoOut.holdE;
       // Semi weapons need fresh trigger pulls: pulse the trigger so the demo shoots its P9.
       wantFire = demoOut.fire && (Math.floor(simTime * 8) % 2 === 0);
+      // The autopilot tops up its magazine rather than click dry forever.
+      const gs = G.guns[G.curWeapon];
+      if (gs && gs.mag <= 3 && gs.reserve > 0 && G.reloadT <= 0 &&
+          (G.curWeapon === 'p9' || G.curWeapon === 'k9' || G.curWeapon === 'vk7')) {
+        if (startReload()) {
+          audio.reload();
+          viewmodel.reload(WEAPONS[G.curWeapon].reload);
+        }
+      }
     }
   }
 
   // Movement locks during freeze and round-over; look is always free.
   if (G.phase === 'live' && playerTarget.alive) player.step(dt, moveKeys);
+
+  // Footsteps: cadence scales with ground speed; the surface decides the timbre.
+  const groundSpeed = Math.hypot(player.state.velocity.x, player.state.velocity.z);
+  if (G.phase === 'live' && playerTarget.alive && player.state.onGround && groundSpeed > 1.2) {
+    footstepTimer -= dt * (0.7 + groundSpeed / 5.3);
+    if (footstepTimer <= 0) {
+      footstepTimer = 0.34;
+      const onCatwalk = player.state.position.y > 1.1 && Math.abs(player.state.position.z - 6) < 1.6;
+      audio.footstep(onCatwalk ? 'metal' : 'concrete');
+    }
+  }
 
   // Firing: VK-7 walks down in 3-round bursts; the rest respect their cadence;
   // semi weapons need a fresh trigger pull.
@@ -618,11 +687,20 @@ function simulate(dt) {
     lastPhase = phase;
     onPhaseChange(phase);
   }
+
+  // The cover hides the HUD chips so the menu reads clean; they return in freeze.
+  const wantHud = G.phase !== 'menu';
+  if (wantHud !== hudChromeVisible) {
+    hudChromeVisible = wantHud;
+    document.getElementById('hud').style.visibility = wantHud ? 'visible' : 'hidden';
+  }
 }
 
 function onPhaseChange(phase) {
   if (phase === 'freeze') {
     hud.setCenter('FREEZE', 'Two sites. A east, B west — hold E to plant · B to buy');
+    // Headless screenshot harness: ?demo=buy opens the buy menu on the first freeze.
+    if (DEMO_MODE === 'buy' && !buyOpen) toggleBuy(true);
   } else if (phase === 'live') {
     hud.setCenter('', '');
     if (buyOpen) toggleBuy(false);
@@ -643,7 +721,7 @@ window.__game__ = { G, rounds, player, targets, world };
 
 // Headless/dev path: ?play or #play skips the overlay and the lock so a static screenshot shows the game.
 if (window.location.hash === '#play' || window.location.hash === '#demo' ||
-    window.location.search.indexOf('play') !== -1 || window.location.search.indexOf('demo=1') !== -1) {
+    window.location.search.indexOf('play') !== -1 || DEMO_RUN) {
   startMatch(false);
 }
 
